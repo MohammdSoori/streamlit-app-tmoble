@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, date
 import jdatetime  # For Jalali to Gregorian conversion
 
 # Function to convert Jalali dates to Gregorian
-@st.cache_data
+
 def jalali_to_gregorian_vectorized(date_series):
     def convert(date_str):
         if pd.isna(date_str):
@@ -22,7 +22,7 @@ def jalali_to_gregorian_vectorized(date_series):
     return date_series.apply(convert)
 
 # Function to extract VIP status based on emojis
-@st.cache_data
+
 def extract_vip_status(name_series):
     def get_vip_status(name):
         if pd.isna(name):
@@ -38,7 +38,7 @@ def extract_vip_status(name_series):
     return name_series.apply(get_vip_status)
 
 # Function to load and preprocess data
-@st.cache_data
+
 def load_data(uploaded_file):
     # Load the Excel file
     data = pd.read_excel(uploaded_file)
@@ -80,7 +80,7 @@ def load_data(uploaded_file):
     return data
 
 # Function to calculate RFM
-@st.cache_data
+
 def calculate_rfm(data, today=None):
     # Divide 'ارزش معامله' by 10 as per the new requirement
     data['ارزش معامله'] = data['ارزش معامله'] / 10
@@ -119,7 +119,7 @@ def calculate_rfm(data, today=None):
     return rfm_data
 
 # Function for RFM segmentation
-@st.cache_data
+
 def rfm_segmentation(data):
     data = data[(data['Monetary'] > 0) & (data['Customer ID'] != 0)]
     # Define R, F, M thresholds based on quantiles to categorize scores
@@ -203,7 +203,7 @@ def rfm_segmentation(data):
     return data
 
 # Function to normalize RFM values for plotting
-@st.cache_data
+
 def normalize_rfm(data):
     scaler = MinMaxScaler()
 
@@ -218,7 +218,7 @@ def normalize_rfm(data):
     return data
 
 # Global functions for data conversion (moved outside conditional blocks)
-@st.cache_data
+
 def convert_df(df):
     # Cache the conversion to prevent computation on every rerun
     return df.to_csv(index=False).encode('utf-8')
@@ -359,7 +359,7 @@ def main():
                 st.stop()
 
             # Cache the filtered data
-            @st.cache_data
+            
             def get_filtered_data():
                 return filtered_data.copy()
 
