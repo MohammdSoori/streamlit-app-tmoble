@@ -7,6 +7,16 @@ from sklearn.preprocessing import MinMaxScaler
 import plotly.express as px
 from datetime import datetime, timedelta, date
 import jdatetime  # For Jalali to Gregorian conversion
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+import requests
+import json
+import re
+
+# Replace with your actual API key
+api_key = 'uvio38zfgpbbsasyn0f8pl61b4ve6va3'
+
+# Base URL for the API
+base_url = 'https://app.didar.me/api'
 
 # Function to convert Jalali dates to Gregorian
 @st.cache_data
@@ -79,6 +89,125 @@ def load_data(uploaded_file):
 
     return data
 
+@st.cache_data
+def update_last_name(last_name, new_vip_status):
+    # Define the mapping between VIP status and emoji
+    vip_emoji_map = {
+        'Gold VIP': '💎',
+        'Silver VIP': '⭐',
+        'Bronze VIP': '💠'
+    }
+    
+    # Remove existing VIP-related emoji and text in parentheses
+    last_name = re.sub(r'\s*\((💎|⭐|💠)?\s*VIP\s*\)', '', last_name).strip()
+    
+    # If new VIP status is Non-VIP, return the updated last name
+    if new_vip_status == 'Non-VIP':
+        return last_name
+    
+    # Add the new VIP emoji in parentheses at the end of the last name
+    emoji = vip_emoji_map.get(new_vip_status, '')
+    if emoji:
+        last_name = f"{last_name} ({emoji}VIP)"
+    
+    return last_name
+
+# Define the function to update the contact's last name via API
+@st.cache_data
+def update_contact_last_name(phone_number, updated_last_name):
+    try:
+        # Endpoint for searching contacts
+        search_endpoint = '/contact/personsearch'
+    
+        # Full URL with API key for search
+        search_url = f"{base_url}{search_endpoint}?apikey={api_key}"
+    
+        # Request payload for searching the contact
+        search_payload = {
+            "Criteria": {
+                "IsDeleted": 0,
+                "IsPinned": -1,
+                "IsVIP": -1,
+                "LeadType": -1,
+                "Pin": -1,
+                "SortOrder": 1,
+                "Keywords": phone_number,
+                "OwnerId": "00000000-0000-0000-0000-000000000000",
+                "SearchFromTime": "1930-01-01T00:00:00.000Z",
+                "SearchToTime": "9999-12-01T00:00:00.000Z",
+                "CustomFields": [],
+                "FilterId": None
+            },
+            "From": 0,
+            "Limit": 30
+        }
+    
+        # Headers
+        headers = {
+            'Content-Type': 'application/json'
+        }
+    
+        # Step 1: Search for the contact
+        response = requests.post(search_url, headers=headers, json=search_payload)
+    
+        # Check if the request was successful
+        if response.status_code == 200:
+            # Parse the response JSON
+            response_data = response.json()
+            contacts = response_data.get('Response', {}).get('List', [])
+            
+            if contacts:
+                # Assuming the first contact is the desired one
+                contact = contacts[0]
+                contact_id = contact.get('Id')
+                
+                # Update the contact's LastName
+                contact['LastName'] = updated_last_name
+                # Update DisplayName if necessary
+                contact['DisplayName'] = (contact.get('FirstName', '') + ' ' + updated_last_name).strip()
+                
+                # Remove read-only or unnecessary fields
+                fields_to_remove = [
+                    'CanDelete', 'CanEdit', 'IsMine', 'HasAccess', '_Type', 'OwnerId_Old', 'Segments', 
+                    'Owner', 'ContactStatus', 'KeepInTouch', 'Fields'
+                ]
+                for field in fields_to_remove:
+                    contact.pop(field, None)
+    
+                # If 'Segments' are present, extract 'SegmentIds'
+                segments = contacts[0].get('Segments', [])
+                segment_ids = [segment.get('Id') for segment in segments]
+    
+                # Prepare the save payload
+                save_payload = {
+                    "Contact": contact,
+                    "SegmentIds": segment_ids
+                }
+    
+                # Endpoint to save/update the contact
+                save_endpoint = '/contact/save'
+                save_url = f"{base_url}{save_endpoint}?ApiKey={api_key}"
+    
+                # Make the POST request to save the updated contact
+                save_response = requests.post(save_url, headers=headers, json=save_payload)
+    
+                if save_response.status_code == 200:
+                    return True
+                else:
+                    print(f"Failed to update contact. Status code: {save_response.status_code}")
+                    print(f"Response: {save_response.text}")
+                    return False
+            else:
+                print("No contact found with the given Phone Number.")
+                return False
+        else:
+            print(f"Failed to search for contact. Status code: {response.status_code}")
+            print(f"Response: {response.text}")
+            return False
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return False
+
 # Function to calculate RFM
 @st.cache_data
 def calculate_rfm(data, today=None):
@@ -102,19 +231,45 @@ def calculate_rfm(data, today=None):
         'تاریخ انجام معامله': lambda x: (today - pd.to_datetime(x).max()).days,  # Recency
         'کد دیدار معامله': 'count',  # Frequency
         'ارزش معامله': 'sum',  # Monetary
+        'تعداد شب ': 'sum',  # Total Nights
         'VIP Status': 'first'  # VIP Status
     }).reset_index()
 
+
     # Rename columns for clarity
     rfm_data.rename(columns={
-        'کد دیدار شخص معامله': 'Customer ID',
-        'نام شخص معامله': 'First Name',
-        'نام خانوادگی شخص معامله': 'Last Name',
-        'موبایل شخص معامله': 'Phone Number',
-        'تاریخ انجام معامله': 'Recency',
-        'کد دیدار معامله': 'Frequency',
-        'ارزش معامله': 'Monetary',
-    }, inplace=True)
+    'کد دیدار شخص معامله': 'Customer ID',
+    'نام شخص معامله': 'First Name',
+    'نام خانوادگی شخص معامله': 'Last Name',
+    'موبایل شخص معامله': 'Phone Number',
+    'تاریخ انجام معامله': 'Recency',
+    'کد دیدار معامله': 'Frequency',
+    'ارزش معامله': 'Monetary',
+    'تعداد شب ': 'Total Nights',  # Renaming Total Nights
+}, inplace=True)
+
+    # Compute average stay
+    rfm_data['average stay'] = rfm_data['Total Nights'] / rfm_data['Frequency']
+
+    # Compute Is Monthly
+    rfm_data['Is Monthly'] = rfm_data['average stay'] > 15
+    # Get last successful deal per customer
+    last_deals = successful_deals.sort_values('تاریخ انجام معامله').groupby('کد دیدار شخص معامله').tail(1)
+
+    # Merge 'تاریخ ورود' and 'تاریخ خروج' into 'rfm_data'
+    rfm_data = rfm_data.merge(
+        last_deals[['کد دیدار شخص معامله', 'تاریخ ورود', 'تاریخ خروج']],
+        left_on='Customer ID',
+        right_on='کد دیدار شخص معامله',
+        how='left'
+    )
+
+    # Compute 'Is staying'
+    rfm_data['Is staying'] = (today >= rfm_data['تاریخ ورود']) & (today <= rfm_data['تاریخ خروج'])
+
+    # Drop the extra 'کد دیدار شخص معامله' column
+    rfm_data.drop(columns=['کد دیدار شخص معامله'], inplace=True)
+
 
     return rfm_data
 
@@ -266,7 +421,7 @@ def main():
 
             # ------------------ Navigation ------------------
             st.sidebar.header("Navigation")
-            page = st.sidebar.radio("Go to", ['General', 'Compare RFM Segments Over Time', 'Portfolio Analysis', 'Seller Analysis', 'Sale Channel Analysis', 'VIP Analysis', 'Customer Inquiry Module'])
+            page = st.sidebar.radio("Go to", ['General', 'Compare RFM Segments Over Time', 'Portfolio Analysis', 'Seller Analysis', 'Sale Channel Analysis', 'VIP Analysis','Customer Batch Edit', 'Customer Inquiry Module'])
 
             # ------------------ Global Filters ------------------
             st.sidebar.header("Global Filters")
@@ -403,7 +558,7 @@ def main():
 
                 # VIP Filter for this page
                 vip_options_page = sorted(rfm_data_filtered_global['VIP Status'].unique())
-                select_all_vips_page = st.checkbox("Select all VIP statuses for plots", value=True, key='select_all_vips_plots')
+                select_all_vips_page = st.checkbox("Select all VIP statuses", value=True, key='select_all_vips_plots')
 
                 if select_all_vips_page:
                     selected_vips_plots = vip_options_page
@@ -414,7 +569,6 @@ def main():
                         default=[],
                         key='vips_multiselect_plots'
                     )
-
                 rfm_data_filtered_global = rfm_data_filtered_global[rfm_data_filtered_global['VIP Status'].isin(selected_vips_plots)]
 
                 segment_options = sorted(rfm_data_filtered_global['RFM_segment_label'].unique())
@@ -545,7 +699,7 @@ def main():
                 else:
                     rfm_data_filtered_table = rfm_data_filtered_global.copy()
 
-                st.write(rfm_data_filtered_table[['Customer ID', 'First Name', 'Last Name', 'VIP Status', 'Phone Number', 'Recency', 'Frequency', 'Monetary', 'RFM_segment_label']])
+                st.write(rfm_data_filtered_table[['Customer ID', 'First Name', 'Last Name', 'VIP Status', 'Phone Number', 'Recency', 'Frequency', 'Monetary','average stay','Is Monthly','Is staying', 'RFM_segment_label']])
 
                 # Optionally, allow users to download the data
                 csv_data = convert_df(rfm_data_filtered_table)
@@ -601,9 +755,9 @@ def main():
 
                         col1, col2 = st.columns(2)
                         with col1:
-                            from_segment = st.selectbox("Select 'FROM' Segment (RFM1)", options=segment_options)
+                            from_segment = st.selectbox("Select 'FROM' Segment (Before)", options=segment_options)
                         with col2:
-                            to_segment = st.selectbox("Select 'TO' Segment (RFM2)", options=segment_options)
+                            to_segment = st.selectbox("Select 'TO' Segment (After)", options=segment_options)
 
                         # Show Results button
                         submit_button = st.form_submit_button(label='Show Results')
@@ -626,7 +780,7 @@ def main():
                         # Prepare data for comparison
                         # Merge RFM1 and RFM2 on 'Customer ID'
                         comparison_df = rfm_data1[['Customer ID', 'First Name', 'Last Name', 'Phone Number', 'VIP Status', 'RFM_segment_label']].merge(
-                            rfm_data_filtered[['Customer ID', 'RFM_segment_label']],
+                            rfm_data_filtered[['Customer ID','average stay','Is Monthly','Is staying', 'RFM_segment_label']],
                             on='Customer ID',
                             how='inner',
                             suffixes=('_RFM1', '_RFM2')
@@ -645,29 +799,46 @@ def main():
                                 st.warning("No customers found for the selected segment transitions and VIP statuses.")
                             else:
                                 # Display count and bar chart
-                                counts = comparison_df['RFM_segment_label_RFM2'].value_counts().reset_index()
-                                counts.columns = ['RFM_segment_label_RFM2', 'Count']
+                                if from_segment!='All':
+                                    counts = comparison_df['RFM_segment_label_RFM2'].value_counts().reset_index()
+                                    counts.columns = ['RFM_segment_label_RFM2', 'Count']
+                                elif to_segment!='All':
+                                    counts = comparison_df['RFM_segment_label_RFM1'].value_counts().reset_index()
+                                    counts.columns = ['RFM_segment_label_RFM1', 'Count']
 
                                 st.write(f"Number of customers matching the criteria: **{len(comparison_df)}**")
 
-                                fig = px.bar(
-                                    counts,
-                                    x='RFM_segment_label_RFM2',
-                                    y='Count',
-                                    color='RFM_segment_label_RFM2',
-                                    color_discrete_map=COLOR_MAP,
-                                    text='Count',
-                                    labels={'RFM_segment_label_RFM2': 'RFM2 Segment', 'Count': 'Number of Customers'}
-                                )
-                                fig.update_traces(textposition='outside')
-                                st.plotly_chart(fig)
+                                if from_segment!='All':
+                                    fig = px.bar(
+                                        counts,
+                                        x='RFM_segment_label_RFM2',
+                                        y='Count',
+                                        color='RFM_segment_label_RFM2',
+                                        color_discrete_map=COLOR_MAP,
+                                        text='Count',
+                                        labels={'RFM_segment_label_RFM2': 'Segment After that date', 'Count': 'Number of Customers'}
+                                    )
+                                elif to_segment!='All':
+                                    fig = px.bar(
+                                        counts,
+                                        x='RFM_segment_label_RFM1',
+                                        y='Count',
+                                        color='RFM_segment_label_RFM1',
+                                        color_discrete_map=COLOR_MAP,
+                                        text='Count',
+                                        labels={'RFM_segment_label_RFM1': 'Segment Before that date', 'Count': 'Number of Customers'}
+                                    )
+                                
+                                if to_segment=='All' or from_segment=='All':
+                                    fig.update_traces(textposition='outside')
+                                    st.plotly_chart(fig)
 
                                 # Show customer table
                                 st.subheader("Customer Details")
-                                customer_table = comparison_df[['Customer ID', 'First Name', 'Last Name', 'Phone Number', 'VIP Status', 'RFM_segment_label_RFM1', 'RFM_segment_label_RFM2']]
+                                customer_table = comparison_df[['Customer ID', 'First Name', 'Last Name', 'Phone Number', 'VIP Status','average stay','Is Monthly','Is staying', 'RFM_segment_label_RFM1', 'RFM_segment_label_RFM2']]
                                 customer_table.rename(columns={
-                                    'RFM_segment_label_RFM1': 'RFM1 Segment',
-                                    'RFM_segment_label_RFM2': 'RFM2 Segment'
+                                    'RFM_segment_label_RFM1': 'Before Segment',
+                                    'RFM_segment_label_RFM2': 'After Segment'
                                 }, inplace=True)
                                 st.write(customer_table)
 
@@ -819,8 +990,8 @@ def main():
                                     customer_nights = successful_deals.groupby(['کد دیدار شخص معامله', 'عنوان محصول'])['تعداد شب '].sum().unstack(fill_value=0)
 
                                     # Merge with RFM data
-                                    customer_details = rfm_data[rfm_data['Customer ID'].isin(customers_in_clusters)][['Customer ID', 'First Name', 'Last Name', 'VIP Status', 'RFM_segment_label', 'Recency', 'Frequency', 'Monetary']]
-                                    customer_details = customer_details.merge(customer_nights, left_on='Customer ID', right_index=True, how='left').fillna(0)
+                                    customer_details = rfm_data[rfm_data['Customer ID'].isin(customers_in_clusters)][['Customer ID', 'First Name', 'Last Name', 'VIP Status','average stay','Is Monthly','Is staying', 'RFM_segment_label', 'Recency', 'Frequency', 'Monetary']]
+                                    customer_details = customer_details.merge(customer_nights, left_on='Customer ID', right_index=True, how='inner').fillna(0)
 
                                     st.write(customer_details)
 
@@ -843,6 +1014,145 @@ def main():
                                             file_name='portfolio_analysis.xlsx',
                                             mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                                         )
+            elif page == 'Customer Batch Edit':
+
+                    st.title("Customer Batch Edit")
+
+                    st.write("""
+                    This tool allows you to upload a list of contacts, specify a word to add or remove from their last names, and perform batch updates.
+                    """)
+
+                    # File uploader for the Excel file
+                    uploaded_file = st.file_uploader("Upload Contacts File (Excel)", type=["xlsx"])
+
+                    # Input fields for the word and action
+                    preset_word = st.text_input("Enter the word to add/remove")
+                    action = st.selectbox("Choose an action", options=["Select", "Add", "Remove"])
+                    password = st.text_input("Enter password to confirm action", type="password")
+
+                    if st.button("Execute"):
+
+                        # Validate password
+                        if password != '1234':
+                            st.error("Invalid password. Please try again.")
+                        elif uploaded_file is None:
+                            st.error("Please upload a valid Excel file.")
+                        elif action not in {"Add", "Remove"}:
+                            st.error("Please select a valid action (Add or Remove).")
+                        elif not preset_word.strip():
+                            st.error("The word to add/remove cannot be empty.")
+                        else:
+                            # Load phone numbers from the uploaded Excel file
+                            try:
+                                phone_numbers = pd.read_excel(uploaded_file, usecols=[0], header=None).squeeze().tolist()
+                            except Exception as e:
+                                st.error("Failed to read the uploaded Excel file. Please ensure it has phone numbers in the first column.")
+                                st.error(str(e))
+                                st.stop()
+
+                            # Initialize success and error counts
+                            success_count = 0
+                            error_count = 0
+
+                            # Process each phone number
+                            for mobile_phone in phone_numbers:
+                                # Endpoint for searching contacts
+                                search_endpoint = '/contact/personsearch'
+                                search_url = f"https://app.didar.me/api{search_endpoint}?apikey=uvio38zfgpbbsasyn0f8pl61b4ve6va3"
+
+                                # Search payload
+                                search_payload = {
+                                    "Criteria": {
+                                        "IsDeleted": 0,
+                                        "IsPinned": -1,
+                                        "IsVIP": -1,
+                                        "LeadType": -1,
+                                        "Pin": -1,
+                                        "SortOrder": 1,
+                                        "Keywords": str(mobile_phone),
+                                        "OwnerId": "00000000-0000-0000-0000-000000000000",
+                                        "SearchFromTime": "1930-01-01T00:00:00.000Z",
+                                        "SearchToTime": "9999-12-01T00:00:00.000Z",
+                                        "CustomFields": [],
+                                        "FilterId": None
+                                    },
+                                    "From": 0,
+                                    "Limit": 30
+                                }
+
+                                # Headers
+                                headers = {
+                                    'Content-Type': 'application/json'
+                                }
+
+                                # Search for the contact
+                                response = requests.post(search_url, headers=headers, json=search_payload)
+
+                                if response.status_code == 200:
+                                    response_data = response.json()
+                                    contacts = response_data.get('Response', {}).get('List', [])
+
+                                    if contacts:
+                                        # Process the first contact found
+                                        contact = contacts[0]
+                                        last_name = contact.get('LastName', '')
+
+                                        if action == 'Add':
+                                            # Add the preset word to the last name
+                                            updated_last_name = last_name + " " + preset_word
+                                        elif action == 'Remove':
+                                            # Remove the preset word from the last name
+                                            pattern = r'\s*' + re.escape(preset_word) + r'$'
+                                            updated_last_name = re.sub(pattern, '', last_name)
+
+                                        if updated_last_name != last_name:
+                                            # Update contact details
+                                            contact['LastName'] = updated_last_name
+                                            contact['DisplayName'] = (contact.get('FirstName', '') + ' ' + updated_last_name).strip()
+
+                                            # Remove unnecessary fields
+                                            fields_to_remove = [
+                                                'CanDelete', 'CanEdit', 'IsMine', 'HasAccess', '_Type', 'OwnerId_Old', 
+                                                'Segments', 'Owner', 'ContactStatus', 'KeepInTouch', 'Fields'
+                                            ]
+                                            for field in fields_to_remove:
+                                                contact.pop(field, None)
+
+                                            # Handle segments
+                                            segments = contact.get('Segments', [])
+                                            segment_ids = [segment.get('Id') for segment in segments]
+
+                                            # Prepare save payload
+                                            save_payload = {
+                                                "Contact": contact,
+                                                "SegmentIds": segment_ids
+                                            }
+
+                                            # Endpoint to save/update the contact
+                                            save_endpoint = '/contact/save'
+                                            save_url = f"https://app.didar.me/api{save_endpoint}?ApiKey=uvio38zfgpbbsasyn0f8pl61b4ve6va3"
+
+                                            # Save the updated contact
+                                            save_response = requests.post(save_url, headers=headers, json=save_payload)
+
+                                            if save_response.status_code == 200:
+                                                success_count += 1
+                                            else:
+                                                error_count += 1
+                                        else:
+                                            if action == 'Remove':
+                                                st.warning(f"The word '{preset_word}' was not found in the last name of contact {mobile_phone}.")
+                                            else:
+                                                st.warning(f"Contact {mobile_phone} already has the word '{preset_word}' in the last name.")
+                                    else:
+                                        error_count += 1
+                                        st.warning(f"No contact found for phone number {mobile_phone}.")
+                                else:
+                                    error_count += 1
+                                    st.error(f"Failed to search for contact {mobile_phone}. Status code: {response.status_code}")
+
+                            # Display summary of the operation
+                            st.success(f"Batch operation completed: {success_count} succeeded, {error_count} failed.")
 
             elif page == 'Seller Analysis':
                 # ------------------ Seller Analysis Module ------------------
@@ -957,7 +1267,7 @@ def main():
                                         customer_nights.rename(columns={'کد دیدار شخص معامله': 'Customer ID', 'تعداد شب ': 'Total Nights'}, inplace=True)
 
                                         # Merge with RFM data
-                                        customer_details = seller_rfm_data[['Customer ID', 'First Name', 'Last Name', 'VIP Status', 'RFM_segment_label', 'Recency', 'Frequency', 'Monetary']]
+                                        customer_details = seller_rfm_data[['Customer ID', 'First Name','Phone Number','Last Name', 'VIP Status', 'Recency', 'Frequency', 'Monetary','average stay','Is Monthly','Is staying', 'RFM_segment_label']]
                                         customer_details = customer_details.merge(customer_nights, on='Customer ID', how='left').fillna(0)
 
                                         st.write(customer_details)
@@ -1080,9 +1390,9 @@ def main():
                                     st.subheader("Successful Deals")
 
                                     # Merge with RFM data to get customer details
-                                    cluster_deals = cluster_deals.merge(rfm_data[['Customer ID', 'RFM_segment_label', 'VIP Status']], left_on='کد دیدار شخص معامله', right_on='Customer ID', how='left')
+                                    cluster_deals = cluster_deals.merge(rfm_data[['Customer ID','Phone Number', 'RFM_segment_label']], left_on='کد دیدار شخص معامله', right_on='Customer ID', how='left')
 
-                                    deals_table = cluster_deals[['Customer ID', 'نام شخص معامله', 'نام خانوادگی شخص معامله', 'VIP Status', 'RFM_segment_label', 'مسئول معامله', 'تعداد شب ', 'ارزش معامله', 'تاریخ انجام معامله']]
+                                    deals_table = cluster_deals[['Customer ID', 'نام شخص معامله', 'نام خانوادگی شخص معامله','Phone Number', 'VIP Status', 'RFM_segment_label', 'مسئول معامله', 'تعداد شب ', 'ارزش معامله', 'تاریخ انجام معامله']]
 
                                     st.write(deals_table)
 
@@ -1223,7 +1533,7 @@ def main():
                                         customer_nights.rename(columns={'کد دیدار شخص معامله': 'Customer ID', 'تعداد شب ': 'Total Nights'}, inplace=True)
 
                                         # Merge with RFM data
-                                        customer_details = channel_rfm_data[['Customer ID', 'First Name', 'Last Name', 'VIP Status', 'RFM_segment_label', 'Recency', 'Frequency', 'Monetary']]
+                                        customer_details = channel_rfm_data[['Customer ID', 'First Name', 'Last Name','Phone Number', 'VIP Status', 'RFM_segment_label','average stay','Is Monthly','Is staying','Recency', 'Frequency', 'Monetary']]
                                         customer_details = customer_details.merge(customer_nights, on='Customer ID', how='left').fillna(0)
 
                                         st.write(customer_details)
@@ -1346,7 +1656,7 @@ def main():
                                     st.subheader("Successful Deals")
 
                                     # Merge with RFM data to get customer details
-                                    cluster_deals = cluster_deals.merge(rfm_data[['Customer ID', 'RFM_segment_label', 'VIP Status']], left_on='کد دیدار شخص معامله', right_on='Customer ID', how='left')
+                                    cluster_deals = cluster_deals.merge(rfm_data[['Customer ID', 'RFM_segment_label']], left_on='کد دیدار شخص معامله', right_on='Customer ID', how='left')
 
                                     deals_table = cluster_deals[['Customer ID', 'نام شخص معامله', 'نام خانوادگی شخص معامله', 'VIP Status', 'RFM_segment_label', 'شیوه آشنایی معامله', 'تعداد شب ', 'ارزش معامله', 'تاریخ انجام معامله']]
 
@@ -1375,58 +1685,46 @@ def main():
                                 st.warning("Please select at least one VIP status.")
                         else:
                             st.warning("Please select at least one cluster.")
-
+            
             elif page == 'VIP Analysis':
-                # ------------------ VIP Analysis ------------------
-
                 st.subheader("VIP Analysis")
 
                 # VIP Filter
                 vip_options_page = sorted(rfm_data['VIP Status'].unique())
-                select_all_vips_page = st.checkbox("Select all VIP statuses", value=True, key='select_all_vips_vip_analysis')
+                default_vips = [vip for vip in vip_options_page if vip != 'Non-VIP']
 
+                select_all_vips_page = st.checkbox("Select all VIP statuses", value=False)
                 if select_all_vips_page:
                     selected_vips_vip_analysis = vip_options_page
                 else:
                     selected_vips_vip_analysis = st.multiselect(
                         "Select VIP Status:",
                         options=vip_options_page,
-                        default=[],
-                        key='vips_multiselect_vip_analysis'
+                        default=default_vips
                     )
 
                 # Date Range Input
-                min_date = data['تاریخ انجام معامله'].min()
-                max_date = data['تاریخ انجام معامله'].max()
+                min_date = data['تاریخ انجام معامله'].min().date()
+                max_date = data['تاریخ انجام معامله'].max().date()
 
-                # Ensure min_date and max_date are dates
-                if pd.isna(min_date) or pd.isna(max_date):
-                    st.warning("Date range is invalid. Please check your data.")
-                    return
-
-                min_date = min_date.date()
-                max_date = max_date.date()
-
-                start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date, key='vip_analysis_start_date')
-                end_date = st.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date, key='vip_analysis_end_date')
+                start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
+                end_date = st.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
 
                 if not selected_vips_vip_analysis:
                     st.warning("Please select at least one VIP status.")
                 else:
-                    # Filter data based on date range and successful deals
-                    date_filtered_data = data[
-                        (data['تاریخ انجام معامله'] >= pd.to_datetime(start_date)) &
-                        (data['تاریخ انجام معامله'] <= pd.to_datetime(end_date)) &
-                        (data['وضعیت معامله'] == 'موفق')
+                    # Filter data
+                    date_filtered_data = filtered_data[
+                        (filtered_data['تاریخ انجام معامله'].dt.date >= start_date) &
+                        (filtered_data['تاریخ انجام معامله'].dt.date <= end_date) &
+                        (filtered_data['وضعیت معامله'] == 'موفق') &
+                        (filtered_data['VIP Status'].isin(selected_vips_vip_analysis))
                     ]
-
-                    # Apply VIP filter
-                    date_filtered_data = date_filtered_data[date_filtered_data['VIP Status'].isin(selected_vips_vip_analysis)]
 
                     if date_filtered_data.empty:
                         st.warning("No successful deals found for the selected VIP statuses in the specified date range.")
                     else:
-                        # Get customer IDs
+                        # Get VIP RFM data
                         vip_customer_ids = date_filtered_data['کد دیدار شخص معامله'].unique()
                         vip_rfm_data = rfm_data[rfm_data['Customer ID'].isin(vip_customer_ids)]
 
@@ -1434,17 +1732,18 @@ def main():
                             st.warning("No RFM data available for the selected VIP statuses.")
                         else:
                             # Insights
-                            total_vip_customers = vip_rfm_data['Customer ID'].nunique()
-                            total_champions = vip_rfm_data[vip_rfm_data['RFM_segment_label'] == 'Champions']['Customer ID'].nunique()
-                            total_vip_champions = vip_rfm_data[(vip_rfm_data['RFM_segment_label'] == 'Champions')]['Customer ID'].nunique()
+                            filtered_vip_data = vip_rfm_data[vip_rfm_data['VIP Status'] != 'Non-VIP']
+                            total_vip_customers = filtered_vip_data['Customer ID'].nunique()
+                            total_vip_champions = filtered_vip_data[filtered_vip_data['RFM_segment_label'] == 'Champions']['Customer ID'].nunique()
                             total_vip_non_champions = total_vip_customers - total_vip_champions
+
 
                             st.write(f"**Total VIP Customers:** {total_vip_customers}")
                             st.write(f"**Total VIP Champions:** {total_vip_champions}")
                             st.write(f"**Total VIP Non-Champions:** {total_vip_non_champions}")
 
                             # Number of Champions who are not VIP
-                            total_champions_all = rfm_data[rfm_data['RFM_segment_label'] == 'Champions']['Customer ID'].nunique()
+                            total_champions_all = rfm_data_filtered_global[rfm_data_filtered_global['RFM_segment_label'] == 'Champions']['Customer ID'].nunique()
                             champions_not_vip = total_champions_all - total_vip_champions
                             st.write(f"**Number of Champions who are not VIP:** {champions_not_vip}")
 
@@ -1504,31 +1803,103 @@ def main():
                             )
                             st.plotly_chart(fig_frequency_vip)
 
-                            # ------------------ Customer Table ------------------
+                            # ------------------ Customer Table with Editable VIP Status ------------------
 
+                            st.subheader("Edit VIPs")
+
+                            # Prepare customer details
+                            vip_customer_details = vip_rfm_data[['Customer ID', 'First Name', 'Last Name', 'VIP Status', 'Phone Number', 'Recency', 'Frequency', 'Monetary', 'RFM_segment_label']].copy()
+                            vip_customer_details['First Name'] = vip_customer_details['First Name'].fillna('')
+                            vip_customer_details['Phone Number'] = vip_customer_details['Phone Number'].fillna('')
+                            vip_customer_details['Last Name'] = vip_customer_details['Last Name'].fillna('')
+
+                            # Add 'New VIP Status' column
+                            vip_customer_details['New VIP Status'] = vip_customer_details['VIP Status']
+
+                            # Configure AgGrid
+                            vip_status_options = ['Gold VIP', 'Silver VIP', 'Bronze VIP', 'Non-VIP']
+                            gb = GridOptionsBuilder.from_dataframe(vip_customer_details)
+                            gb.configure_pagination()
+                            gb.configure_default_column(editable=False)
+                            gb.configure_column('New VIP Status', editable=True, cellEditor='agSelectCellEditor', cellEditorParams={'values': vip_status_options})
+                            grid_options = gb.build()
+
+                            grid_response = AgGrid(
+                                vip_customer_details,
+                                gridOptions=grid_options,
+                                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                                update_mode=GridUpdateMode.VALUE_CHANGED,
+                                fit_columns_on_grid_load=True
+                            )
+
+                            edited_df = grid_response['data']
+
+                            # Password Input
+                            password = st.text_input('Enter password to apply changes:', type='password')
+
+                            # Apply Changes Button
+                            if st.button('APPLY CHANGES'):
+                                if password != '1234':
+                                    st.error('Incorrect password.')
+                                else:
+                                    changed_vip_customers = edited_df[edited_df['VIP Status'] != edited_df['New VIP Status']]
+                                    if changed_vip_customers.empty:
+                                        st.info('No changes detected.')
+                                    else:
+                                        # Apply changes
+                                        for idx, row in changed_vip_customers.iterrows():
+                                            customer_id = row['Customer ID']
+                                            phone_number = row['Phone Number']
+                                            old_vip_status = row['VIP Status']
+                                            new_vip_status = row['New VIP Status']
+                                            last_name = row['Last Name']
+
+                                            updated_last_name = update_last_name(last_name, new_vip_status)
+
+                                            # Update local dataframes
+                                            edited_df.at[idx, 'Last Name'] = updated_last_name
+                                            edited_df.at[idx, 'VIP Status'] = new_vip_status
+                                            edited_df.at[idx, 'Last Name'] = updated_last_name
+                                            vip_rfm_data.loc[vip_rfm_data['Customer ID'] == customer_id, 'Last Name'] = updated_last_name
+                                            vip_rfm_data.loc[vip_rfm_data['Customer ID'] == customer_id, 'VIP Status'] = new_vip_status
+                                            rfm_data.loc[rfm_data['Customer ID'] == customer_id, 'Last Name'] = updated_last_name
+                                            rfm_data.loc[rfm_data['Customer ID'] == customer_id, 'VIP Status'] = new_vip_status
+                                         
+                                            # Update via API
+                                            success = update_contact_last_name(phone_number, updated_last_name)
+                                            customer_name = f"{row['First Name']} {updated_last_name}".strip()
+                                            if success:
+                                                st.success(f"Customer {customer_name} updated successfully.")
+                                            else:
+                                                st.error(f"Failed to update customer {customer_name}.")
+
+                                        
+                             # Display updated customer table
                             st.subheader("VIP Customer Details")
+                            st.write(edited_df.drop(columns=['New VIP Status']))
 
-                            st.write(vip_rfm_data[['Customer ID', 'First Name', 'Last Name', 'VIP Status', 'Recency', 'Frequency', 'Monetary', 'RFM_segment_label']])
-
-                            # Download buttons
-                            csv_data = convert_df(vip_rfm_data)
-                            excel_data = convert_df_to_excel(vip_rfm_data)
+                            # Optionally, allow users to download the updated data
+                            csv_data = convert_df(edited_df.drop(columns=['New VIP Status']))
+                            excel_data = convert_df_to_excel(edited_df.drop(columns=['New VIP Status']))
 
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.download_button(
-                                    label="Download data as CSV",
-                                    data=csv_data,
-                                    file_name='vip_analysis.csv',
-                                    mime='text/csv',
+                                label="Download updated data as CSV",
+                                data=csv_data,
+                                file_name='updated_vip_analysis.csv',
+                                mime='text/csv',
                                 )
                             with col2:
                                 st.download_button(
-                                    label="Download data as Excel",
-                                    data=excel_data,
-                                    file_name='vip_analysis.xlsx',
-                                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                label="Download updated data as Excel",
+                                data=excel_data,
+                                file_name='updated_vip_analysis.xlsx',
+                                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                                 )
+
+                                       
+
 
             elif page == 'Customer Inquiry Module':
                 # ------------------ Customer Inquiry Module ------------------
